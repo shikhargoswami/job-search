@@ -1,1086 +1,926 @@
-## SQL Interview Questions for Slice
+# SQL Interview Questions for Slice
 
-### Question 1: Calculate Monthly Active Users (MAU) Growth Rate for Slice
+## About Slice
+Slice is a fintech company focused on payments, credit cards, and merchant solutions. These SQL questions are designed around common business scenarios in the payments/fintech domain.
 
-**Interviewer:** We need to track our monthly active user growth. Can you calculate month-over-month MAU and the growth rate?
+---
 
-**You:** Great question! Let me clarify a few things. When you say "active user," do you mean a customer who made at least one transaction in that month?
+## Question 1: Monthly Active Users (MAU) Growth Rate
 
-**Interviewer:** Yes, exactly—anyone who completed at least one transaction.
+**Interviewer:** "We want to calculate the Month-over-Month growth rate of Monthly Active Users (MAU). Can you write a query for this?"
 
-**You:** Perfect. And for the growth rate, should I compare each month with the previous month? For example, February growth compared to January?
+**Candidate:** "Sure! Before I begin, I have a few clarifying questions:
+1. How do we define an 'active user'? Is it any user who made at least one transaction, or logged in, or something else?
+2. What time period should I consider?
+3. Should I handle cases where the previous month had zero users (to avoid division by zero)?"
 
-**Interviewer:** Correct. Calculate the percentage growth from the previous month.
+**Interviewer:** "Good questions. Let's define active user as someone who made at least one transaction. Consider the last 12 months. Yes, please handle edge cases."
 
-**You:** Got it. Should I focus on a specific time period, or analyze all available data?
+**Candidate:** "Perfect. Here's my approach:
 
-**Interviewer:** Let's look at the last 12 months of data.
+### Step-wise Approach:
+1. First, I'll aggregate unique users per month from the transactions table
+2. Use LAG() window function to get previous month's MAU
+3. Calculate growth rate as ((current - previous) / previous) * 100
+4. Handle NULL and zero cases
 
-**You:** Excellent. I'll use a CTE-based approach with LAG window function for this.
+### Code:
 
-**Solution:**
-
+```sql
 WITH monthly_active_users AS (
-  SELECT 
-    DATE_TRUNC('month', transaction_date) AS month,
-    COUNT(DISTINCT customer_id) AS active_users
-  FROM transactions
-  WHERE transaction_date >= CURRENT_DATE - INTERVAL '12 months'
-    AND status = 'completed'
-  GROUP BY DATE_TRUNC('month', transaction_date)
+    SELECT 
+        DATE_TRUNC('month', transaction_date) AS month,
+        COUNT(DISTINCT user_id) AS mau
+    FROM transactions
+    WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '12 months'
+    GROUP BY DATE_TRUNC('month', transaction_date)
 ),
-growth_calculation AS (
-  SELECT 
+mau_with_previous AS (
+    SELECT 
+        month,
+        mau,
+        LAG(mau) OVER (ORDER BY month) AS previous_mau
+    FROM monthly_active_users
+)
+SELECT 
     month,
-    active_users,
-    LAG(active_users) OVER (ORDER BY month) AS prev_month_users,
-    ROUND(
-      ((active_users - LAG(active_users) OVER (ORDER BY month))::DECIMAL 
-       / NULLIF(LAG(active_users) OVER (ORDER BY month), 0)) * 100, 
-      2
-    ) AS mom_growth_rate
-  FROM monthly_active_users
-)
-SELECT 
-  TO_CHAR(month, 'YYYY-MM') AS month,
-  active_users,
-  prev_month_users,
-  COALESCE(mom_growth_rate, 0) AS mom_growth_percentage
-FROM growth_calculation
-ORDER BY month;
-
-**Explanation:**
-
-"I'm using a two-step CTE approach. First, I aggregate distinct active customers by month using DATE_TRUNC. Then I use the LAG window function to fetch the previous month's count. The NULLIF prevents division by zero errors, and COALESCE ensures the first month shows 0% instead of NULL. This gives us clean month-over-month percentage growth, which is crucial for Slice's growth metrics tracking."
-
----
-
-### Question 2: Identify Customers with Declining Transaction Patterns (Churn Risk)
-
-**Interviewer:** We want to identify customers who might be churning. Can you find customers whose transaction activity has declined significantly in the last 30 days compared to the previous 60 days?
-
-**You:** Excellent retention question! Just to clarify—when you say "declined significantly," what threshold should I use? For example, 50% reduction in transaction count?
-
-**Interviewer:** Yes, let's flag anyone whose transaction count in the last 30 days is less than 50% of their average in the 31-60 day window.
-
-**You:** Perfect. Should I consider only completed transactions, or include declined ones too?
-
-**Interviewer:** Only completed transactions—we care about actual usage patterns.
-
-**You:** Got it. Should I also calculate the monetary decline, or just transaction frequency?
-
-**Interviewer:** Good thinking—include both transaction count and total spend decline.
-
-**Solution:**
-
-WITH customer_activity_windows AS (
-  SELECT 
-    customer_id,
-    -- Last 30 days activity
-    COUNT(CASE WHEN transaction_date >= CURRENT_DATE - INTERVAL '30 days' 
-          THEN transaction_id END) AS txn_count_last_30d,
-    SUM(CASE WHEN transaction_date >= CURRENT_DATE - INTERVAL '30 days' 
-        THEN amount ELSE 0 END) AS spend_last_30d,
-    
-    -- 31-60 days activity (previous period)
-    COUNT(CASE WHEN transaction_date BETWEEN CURRENT_DATE - INTERVAL '60 days' 
-               AND CURRENT_DATE - INTERVAL '31 days' 
-          THEN transaction_id END) AS txn_count_31_60d,
-    SUM(CASE WHEN transaction_date BETWEEN CURRENT_DATE - INTERVAL '60 days' 
-             AND CURRENT_DATE - INTERVAL '31 days' 
-        THEN amount ELSE 0 END) AS spend_31_60d
-  FROM transactions
-  WHERE transaction_date >= CURRENT_DATE - INTERVAL '60 days'
-    AND status = 'completed'
-  GROUP BY customer_id
-),
-churn_risk_analysis AS (
-  SELECT 
-    c.customer_id,
-    c.name,
-    c.city,
-    c.credit_score,
-    caw.txn_count_last_30d,
-    caw.txn_count_31_60d,
-    caw.spend_last_30d,
-    caw.spend_31_60d,
-    ROUND((caw.txn_count_last_30d::DECIMAL / NULLIF(caw.txn_count_31_60d, 0)) * 100, 1) 
-      AS txn_retention_rate,
-    ROUND((caw.spend_last_30d / NULLIF(caw.spend_31_60d, 0)) * 100, 1) 
-      AS spend_retention_rate,
+    mau,
+    previous_mau,
     CASE 
-      WHEN caw.txn_count_last_30d < (caw.txn_count_31_60d * 0.5) THEN 'High Risk'
-      WHEN caw.txn_count_last_30d < (caw.txn_count_31_60d * 0.75) THEN 'Medium Risk'
-      ELSE 'Low Risk'
-    END AS churn_risk_category
-  FROM customer_activity_windows caw
-  JOIN customers c ON caw.customer_id = c.customer_id
-  WHERE caw.txn_count_31_60d > 0  -- Had activity in previous period
-)
-SELECT 
-  customer_id,
-  name,
-  city,
-  credit_score,
-  txn_count_last_30d,
-  txn_count_31_60d,
-  txn_retention_rate,
-  spend_last_30d,
-  spend_31_60d,
-  spend_retention_rate,
-  churn_risk_category
-FROM churn_risk_analysis
-WHERE churn_risk_category IN ('High Risk', 'Medium Risk')
-ORDER BY txn_retention_rate ASC, spend_retention_rate ASC
-LIMIT 100;
+        WHEN previous_mau IS NULL OR previous_mau = 0 THEN NULL
+        ELSE ROUND(((mau - previous_mau) * 100.0 / previous_mau), 2)
+    END AS growth_rate_percentage
+FROM mau_with_previous
+ORDER BY month;
+```
 
-**Explanation:**
-
-"I'm comparing two 30-day windows to detect activity decline. The key insight is calculating retention rates for both transaction frequency and spend amount—some customers might transact less frequently but maintain high spend per transaction. I categorize risk into High/Medium/Low based on the 50% and 75% thresholds. This helps Slice's retention team prioritize outreach to at-risk customers before they fully churn."
+### Key Points:
+- Used CTEs for readability
+- `DATE_TRUNC` normalizes dates to month level
+- `LAG()` window function efficiently gets previous row
+- Handled division by zero with CASE statement"
 
 ---
 
-### Question 3: Merchant Category Performance - Which Categories Drive Slice Revenue?
+## Question 2: Identify Churned Users
 
-**Interviewer:** We want to understand which merchant categories generate the most revenue for Slice. Can you analyze merchant category performance?
+**Interviewer:** "Can you write a query to identify users who churned? These are users who were active in the previous month but not in the current month."
 
-**You:** Absolutely! Just to confirm—by revenue for Slice, do you mean the commission we earn from merchants?
+**Candidate:** "Got it. Let me clarify:
+1. By 'current month', do you mean the calendar current month or should it be parameterized?
+2. What constitutes 'active' - any transaction?
+3. Should I return just user IDs or additional user details?"
 
-**Interviewer:** Yes, exactly. Revenue would be transaction amount multiplied by the merchant's commission rate.
+**Interviewer:** "Use current calendar month. Active means at least one transaction. Return user_id, name, and their last transaction date."
 
-**You:** Perfect. Should I calculate this for all time, or focus on a recent period?
+**Candidate:** "Great, here's my approach:
 
-**Interviewer:** Let's look at the last quarter (90 days) to see current trends.
+### Step-wise Approach:
+1. Find users active in previous month
+2. Find users active in current month
+3. Use LEFT JOIN or EXCEPT to find users in previous but not in current
+4. Join with users table for additional details
 
-**You:** Got it. Should I also include metrics like transaction count, average order value, and customer penetration by category?
+### Code:
 
-**Interviewer:** Yes, that would give us a complete picture. Also show category growth trends.
-
-**Solution:**
-
-WITH category_metrics_current AS (
-  SELECT 
-    m.merchant_category,
-    COUNT(DISTINCT t.transaction_id) AS total_transactions,
-    COUNT(DISTINCT t.customer_id) AS unique_customers,
-    SUM(t.amount) AS total_gmv,  -- Gross Merchandise Value
-    SUM(t.amount * m.commission_rate / 100) AS slice_revenue,
-    AVG(t.amount) AS avg_transaction_value,
-    ROUND(AVG(m.commission_rate), 2) AS avg_commission_rate
-  FROM transactions t
-  JOIN merchants m ON t.merchant_id = m.merchant_id
-  WHERE t.transaction_date >= CURRENT_DATE - INTERVAL '90 days'
-    AND t.status = 'completed'
-  GROUP BY m.merchant_category
+```sql
+WITH previous_month_users AS (
+    SELECT DISTINCT user_id
+    FROM transactions
+    WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'
+      AND transaction_date < DATE_TRUNC('month', CURRENT_DATE)
 ),
-category_metrics_previous AS (
-  SELECT 
-    m.merchant_category,
-    SUM(t.amount * m.commission_rate / 100) AS slice_revenue_prev_quarter
-  FROM transactions t
-  JOIN merchants m ON t.merchant_id = m.merchant_id
-  WHERE t.transaction_date BETWEEN CURRENT_DATE - INTERVAL '180 days' 
-        AND CURRENT_DATE - INTERVAL '91 days'
-    AND t.status = 'completed'
-  GROUP BY m.merchant_category
+current_month_users AS (
+    SELECT DISTINCT user_id
+    FROM transactions
+    WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE)
+      AND transaction_date < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'
 ),
-category_totals AS (
-  SELECT 
-    SUM(total_transactions) AS overall_txn_count,
-    SUM(unique_customers) AS overall_customer_count,
-    SUM(slice_revenue) AS overall_revenue
-  FROM category_metrics_current
+churned_users AS (
+    SELECT user_id 
+    FROM previous_month_users
+    WHERE user_id NOT IN (SELECT user_id FROM current_month_users)
 )
 SELECT 
-  cmc.merchant_category,
-  cmc.total_transactions,
-  ROUND((cmc.total_transactions::DECIMAL / ct.overall_txn_count) * 100, 2) 
-    AS pct_of_total_txns,
-  cmc.unique_customers,
-  ROUND((cmc.unique_customers::DECIMAL / ct.overall_customer_count) * 100, 2) 
-    AS customer_penetration_pct,
-  ROUND(cmc.total_gmv, 2) AS gmv,
-  ROUND(cmc.slice_revenue, 2) AS slice_revenue,
-  ROUND((cmc.slice_revenue / ct.overall_revenue) * 100, 2) AS pct_of_total_revenue,
-  ROUND(cmc.avg_transaction_value, 2) AS avg_order_value,
-  cmc.avg_commission_rate,
-  ROUND(
-    ((cmc.slice_revenue - COALESCE(cmp.slice_revenue_prev_quarter, 0)) 
-     / NULLIF(cmp.slice_revenue_prev_quarter, 0)) * 100, 
-    2
-  ) AS qoq_revenue_growth_pct
-FROM category_metrics_current cmc
-CROSS JOIN category_totals ct
-LEFT JOIN category_metrics_previous cmp 
-  ON cmc.merchant_category = cmp.merchant_category
-ORDER BY cmc.slice_revenue DESC;
+    u.user_id,
+    u.name,
+    u.email,
+    MAX(t.transaction_date) AS last_transaction_date
+FROM churned_users c
+JOIN users u ON c.user_id = u.user_id
+JOIN transactions t ON c.user_id = t.user_id
+GROUP BY u.user_id, u.name, u.email
+ORDER BY last_transaction_date DESC;
+```
 
-**Explanation:**
+### Alternative using LEFT JOIN:
 
-"This query provides a comprehensive merchant category dashboard. I calculate Slice's actual revenue using the commission rates, not just GMV. The query includes penetration metrics showing what percentage of Slice customers use each category, and QoQ growth to spot trending categories. For example, if 'Food' has high GMV but low commission rates, while 'Electronics' has lower volume but higher margins, Slice might want to strategically partner with more electronics merchants. This data directly informs partnership strategy."
+```sql
+SELECT 
+    pm.user_id,
+    u.name,
+    MAX(t.transaction_date) AS last_transaction_date
+FROM previous_month_users pm
+LEFT JOIN current_month_users cm ON pm.user_id = cm.user_id
+JOIN users u ON pm.user_id = u.user_id
+JOIN transactions t ON pm.user_id = t.user_id
+WHERE cm.user_id IS NULL
+GROUP BY pm.user_id, u.name;
+```
+
+### Key Points:
+- LEFT JOIN with NULL check is generally more performant than NOT IN for large datasets
+- Used date ranges to ensure accurate month boundaries"
 
 ---
 
-### Question 4: Cohort Retention Analysis - Monthly Signup Cohorts
+## Question 3: Top Merchants by Transaction Volume
 
-**Interviewer:** We need a cohort retention analysis. Can you show retention rates for each monthly signup cohort over their first 6 months?
+**Interviewer:** "Write a query to find the top 10 merchants by transaction volume for each category."
 
-**You:** Perfect—cohort analysis is crucial for understanding user behavior! Just to clarify, by "retained," do you mean customers who made at least one transaction in that month?
+**Candidate:** "Sure! A few questions:
+1. By 'volume', do you mean total count of transactions or total monetary value?
+2. Should I handle ties? (e.g., if 10th and 11th have same volume)
+3. What if a category has fewer than 10 merchants?"
 
-**Interviewer:** Yes, any completed transaction counts as active for that month.
+**Interviewer:** "Volume means total monetary value. Yes, include ties. Include all merchants if less than 10."
 
-**You:** Got it. Should the retention be cumulative (active at any point up to that month) or specific (active in that exact month)?
+**Candidate:** "Perfect, I'll use DENSE_RANK() for ties.
 
-**Interviewer:** Specific to each month—we want to see the retention curve month by month.
+### Step-wise Approach:
+1. Aggregate transaction amounts by merchant and category
+2. Use DENSE_RANK() window function partitioned by category
+3. Filter for rank <= 10
 
-**You:** Perfect. And should I include only users who signed up in the last 12 months to have enough forward-looking data?
+### Code:
 
-**Interviewer:** Yes, that makes sense. Focus on recent cohorts.
+```sql
+WITH merchant_volume AS (
+    SELECT 
+        m.category,
+        m.merchant_id,
+        m.merchant_name,
+        SUM(t.amount) AS total_volume,
+        COUNT(*) AS transaction_count
+    FROM transactions t
+    JOIN merchants m ON t.merchant_id = m.merchant_id
+    WHERE t.transaction_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'
+    GROUP BY m.category, m.merchant_id, m.merchant_name
+),
+ranked_merchants AS (
+    SELECT 
+        category,
+        merchant_id,
+        merchant_name,
+        total_volume,
+        transaction_count,
+        DENSE_RANK() OVER (
+            PARTITION BY category 
+            ORDER BY total_volume DESC
+        ) AS rank
+    FROM merchant_volume
+)
+SELECT 
+    category,
+    rank,
+    merchant_id,
+    merchant_name,
+    total_volume,
+    transaction_count
+FROM ranked_merchants
+WHERE rank <= 10
+ORDER BY category, rank;
+```
 
-**Solution:**
+### Key Points:
+- `DENSE_RANK()` ensures ties get same rank and no gaps
+- `ROW_NUMBER()` would skip ties, `RANK()` would leave gaps
+- Partitioned by category to get top 10 per category"
 
-WITH cohorts AS (
-  SELECT 
-    customer_id,
-    DATE_TRUNC('month', signup_date) AS cohort_month
-  FROM customers
-  WHERE signup_date >= CURRENT_DATE - INTERVAL '12 months'
+---
+
+## Question 4: Detecting Fraudulent Transactions
+
+**Interviewer:** "Can you write a query to flag potentially fraudulent transactions? Consider transactions that are 3x the user's average transaction amount or multiple transactions within 5 minutes."
+
+**Candidate:** "Great question! Let me clarify:
+1. Should I calculate the average from all historical transactions or a rolling window?
+2. For the time-based rule, is it any 5-minute window or specifically from the same merchant?
+3. Should I flag if either condition is true or both?"
+
+**Interviewer:** "Use 90-day rolling average. Time-based applies to any merchant. Flag if either condition is true."
+
+**Candidate:** "Got it.
+
+### Step-wise Approach:
+1. Calculate 90-day rolling average per user
+2. Identify transactions 3x above average
+3. Use LAG/LEAD to find transactions within 5 minutes
+4. Combine both conditions with UNION or CASE
+
+### Code:
+
+```sql
+WITH user_avg AS (
+    SELECT 
+        user_id,
+        AVG(amount) AS avg_amount
+    FROM transactions
+    WHERE transaction_date >= CURRENT_DATE - INTERVAL '90 days'
+    GROUP BY user_id
+),
+transactions_with_context AS (
+    SELECT 
+        t.transaction_id,
+        t.user_id,
+        t.amount,
+        t.transaction_date,
+        t.merchant_id,
+        ua.avg_amount,
+        LAG(t.transaction_date) OVER (
+            PARTITION BY t.user_id 
+            ORDER BY t.transaction_date
+        ) AS prev_transaction_time,
+        LEAD(t.transaction_date) OVER (
+            PARTITION BY t.user_id 
+            ORDER BY t.transaction_date
+        ) AS next_transaction_time
+    FROM transactions t
+    LEFT JOIN user_avg ua ON t.user_id = ua.user_id
+)
+SELECT 
+    transaction_id,
+    user_id,
+    amount,
+    transaction_date,
+    merchant_id,
+    avg_amount,
+    CASE 
+        WHEN amount > 3 * COALESCE(avg_amount, 0) THEN 'HIGH_AMOUNT'
+        ELSE NULL 
+    END AS amount_flag,
+    CASE 
+        WHEN transaction_date - prev_transaction_time < INTERVAL '5 minutes'
+          OR next_transaction_time - transaction_date < INTERVAL '5 minutes'
+        THEN 'RAPID_SUCCESSION'
+        ELSE NULL 
+    END AS time_flag,
+    CASE 
+        WHEN amount > 3 * COALESCE(avg_amount, 0) 
+          OR transaction_date - prev_transaction_time < INTERVAL '5 minutes'
+          OR next_transaction_time - transaction_date < INTERVAL '5 minutes'
+        THEN TRUE 
+        ELSE FALSE 
+    END AS is_potentially_fraudulent
+FROM transactions_with_context
+WHERE amount > 3 * COALESCE(avg_amount, 0)
+   OR transaction_date - prev_transaction_time < INTERVAL '5 minutes'
+   OR next_transaction_time - transaction_date < INTERVAL '5 minutes'
+ORDER BY transaction_date DESC;
+```
+
+### Key Points:
+- Used window functions for time-based detection
+- COALESCE handles new users with no history
+- Separate flags help understand why transaction was flagged"
+
+---
+
+## Question 5: Calculate User Retention Cohorts
+
+**Interviewer:** "We want to analyze user retention by signup cohort. Can you build a cohort retention table?"
+
+**Candidate:** "Absolutely! Clarifying questions:
+1. How do we define retention - any activity or specific action (transaction)?
+2. What granularity - weekly or monthly cohorts?
+3. How many periods should I track?"
+
+**Interviewer:** "Retention = made a transaction. Monthly cohorts. Track for 6 months."
+
+**Candidate:** "Perfect, I'll build a cohort analysis.
+
+### Step-wise Approach:
+1. Identify signup month for each user (cohort)
+2. For each user, identify which months they were active
+3. Calculate months since signup
+4. Aggregate by cohort and period
+5. Calculate retention percentage
+
+### Code:
+
+```sql
+WITH user_cohorts AS (
+    SELECT 
+        user_id,
+        DATE_TRUNC('month', signup_date) AS cohort_month
+    FROM users
 ),
 user_activities AS (
-  SELECT DISTINCT
-    customer_id,
-    DATE_TRUNC('month', transaction_date) AS activity_month
-  FROM transactions
-  WHERE status = 'completed'
+    SELECT 
+        t.user_id,
+        uc.cohort_month,
+        DATE_TRUNC('month', t.transaction_date) AS activity_month
+    FROM transactions t
+    JOIN user_cohorts uc ON t.user_id = uc.user_id
 ),
-cohort_activities AS (
-  SELECT 
-    c.cohort_month,
-    ua.customer_id,
-    ua.activity_month,
-    EXTRACT(MONTH FROM AGE(ua.activity_month, c.cohort_month))::INTEGER 
-      AS months_since_signup
-  FROM cohorts c
-  JOIN user_activities ua ON c.customer_id = ua.customer_id
-  WHERE EXTRACT(MONTH FROM AGE(ua.activity_month, c.cohort_month)) BETWEEN 0 AND 6
+cohort_activity AS (
+    SELECT DISTINCT
+        cohort_month,
+        user_id,
+        -- Calculate months since signup
+        (EXTRACT(YEAR FROM activity_month) - EXTRACT(YEAR FROM cohort_month)) * 12 +
+        (EXTRACT(MONTH FROM activity_month) - EXTRACT(MONTH FROM cohort_month)) AS months_since_signup
+    FROM user_activities
+    WHERE activity_month >= cohort_month
 ),
 cohort_sizes AS (
-  SELECT 
-    cohort_month,
-    COUNT(DISTINCT customer_id) AS cohort_size
-  FROM cohorts
-  GROUP BY cohort_month
+    SELECT 
+        cohort_month,
+        COUNT(DISTINCT user_id) AS cohort_size
+    FROM user_cohorts
+    GROUP BY cohort_month
 ),
 retention_data AS (
-  SELECT 
-    ca.cohort_month,
-    ca.months_since_signup,
-    COUNT(DISTINCT ca.customer_id) AS active_users,
-    cs.cohort_size
-  FROM cohort_activities ca
-  JOIN cohort_sizes cs ON ca.cohort_month = cs.cohort_month
-  GROUP BY ca.cohort_month, ca.months_since_signup, cs.cohort_size
+    SELECT 
+        ca.cohort_month,
+        ca.months_since_signup,
+        COUNT(DISTINCT ca.user_id) AS retained_users
+    FROM cohort_activity ca
+    WHERE ca.months_since_signup <= 6
+    GROUP BY ca.cohort_month, ca.months_since_signup
 )
 SELECT 
-  TO_CHAR(cohort_month, 'YYYY-MM') AS cohort,
-  cohort_size,
-  MAX(CASE WHEN months_since_signup = 0 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_0,
-  MAX(CASE WHEN months_since_signup = 1 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_1,
-  MAX(CASE WHEN months_since_signup = 2 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_2,
-  MAX(CASE WHEN months_since_signup = 3 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_3,
-  MAX(CASE WHEN months_since_signup = 4 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_4,
-  MAX(CASE WHEN months_since_signup = 5 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_5,
-  MAX(CASE WHEN months_since_signup = 6 THEN ROUND(100.0 * active_users / cohort_size, 1) END) AS month_6
-FROM retention_data
+    rd.cohort_month,
+    cs.cohort_size,
+    rd.months_since_signup,
+    rd.retained_users,
+    ROUND(100.0 * rd.retained_users / cs.cohort_size, 2) AS retention_rate
+FROM retention_data rd
+JOIN cohort_sizes cs ON rd.cohort_month = cs.cohort_month
+ORDER BY rd.cohort_month, rd.months_since_signup;
+```
+
+### Pivot Version (for visualization):
+
+```sql
+SELECT 
+    cohort_month,
+    cohort_size,
+    MAX(CASE WHEN months_since_signup = 0 THEN retention_rate END) AS month_0,
+    MAX(CASE WHEN months_since_signup = 1 THEN retention_rate END) AS month_1,
+    MAX(CASE WHEN months_since_signup = 2 THEN retention_rate END) AS month_2,
+    MAX(CASE WHEN months_since_signup = 3 THEN retention_rate END) AS month_3,
+    MAX(CASE WHEN months_since_signup = 4 THEN retention_rate END) AS month_4,
+    MAX(CASE WHEN months_since_signup = 5 THEN retention_rate END) AS month_5,
+    MAX(CASE WHEN months_since_signup = 6 THEN retention_rate END) AS month_6
+FROM (
+    -- previous query as subquery
+) retention_base
 GROUP BY cohort_month, cohort_size
-ORDER BY cohort_month DESC;
+ORDER BY cohort_month;
+```
 
-**Explanation:**
-
-"This creates a classic cohort retention table. Month 0 shows what percentage of the cohort was active in their signup month (typically close to 100%), and subsequent columns show retention drop-off. This is critical for Slice to understand if product changes improve early retention. For example, if we see Month 1 retention improve from 40% to 55% after launching a new feature, that's a strong signal. The pivot format makes it easy to visualize retention curves and identify problematic cohorts."
-
----
-
-### Question 5: Detect Unusual Spending Patterns - Fraud Detection Query
-
-**Interviewer:** We need to identify potentially fraudulent transactions. Can you write a query to detect unusual spending patterns?
-
-**You:** Important problem for fintech! Let me clarify the approach. Should I look for statistical anomalies like transactions that are 3 standard deviations above a customer's average?
-
-**Interviewer:** Yes, that's a good start. Also flag multiple transactions within a very short time window.
-
-**You:** Perfect. What time window should I consider suspicious? For example, 3+ transactions within 5 minutes?
-
-**Interviewer:** Yes, 3 or more transactions within 5 minutes is unusual. Also check for international transactions that don't match the customer's usual pattern.
-
-**You:** Got it. Should I create a risk score or just flag potential fraud cases?
-
-**Interviewer:** Flag them with a risk level—High, Medium, Low—based on multiple signals.
-
-**Solution:**
-
-WITH customer_baseline AS (
-  SELECT 
-    customer_id,
-    AVG(amount) AS avg_amount,
-    STDDEV(amount) AS stddev_amount,
-    COUNT(CASE WHEN is_international = TRUE THEN 1 END)::DECIMAL / 
-      NULLIF(COUNT(*), 0) AS intl_transaction_ratio
-  FROM transactions
-  WHERE transaction_date >= CURRENT_DATE - INTERVAL '90 days'
-    AND status = 'completed'
-  GROUP BY customer_id
-),
-transaction_time_gaps AS (
-  SELECT 
-    transaction_id,
-    customer_id,
-    transaction_timestamp,
-    amount,
-    is_international,
-    merchant_category,
-    LAG(transaction_timestamp) OVER (
-      PARTITION BY customer_id 
-      ORDER BY transaction_timestamp
-    ) AS prev_txn_timestamp,
-    LEAD(transaction_timestamp) OVER (
-      PARTITION BY customer_id 
-      ORDER BY transaction_timestamp
-    ) AS next_txn_timestamp
-  FROM transactions
-  WHERE transaction_date >= CURRENT_DATE - INTERVAL '7 days'
-    AND status = 'completed'
-),
-rapid_fire_detection AS (
-  SELECT 
-    customer_id,
-    transaction_timestamp,
-    COUNT(*) OVER (
-      PARTITION BY customer_id 
-      ORDER BY transaction_timestamp 
-      RANGE BETWEEN INTERVAL '5 minutes' PRECEDING AND CURRENT ROW
-    ) AS txn_count_last_5min
-  FROM transaction_time_gaps
-),
-fraud_signals AS (
-  SELECT 
-    t.transaction_id,
-    t.customer_id,
-    c.name AS customer_name,
-    t.transaction_timestamp,
-    t.amount,
-    t.merchant_category,
-    t.is_international,
-    cb.avg_amount,
-    cb.stddev_amount,
-    cb.intl_transaction_ratio,
-    
-    -- Signal 1: Amount anomaly
-    CASE 
-      WHEN t.amount > (cb.avg_amount + 3 * cb.stddev_amount) THEN 1 
-      ELSE 0 
-    END AS amount_anomaly_flag,
-    
-    -- Signal 2: Rapid fire transactions
-    CASE 
-      WHEN rf.txn_count_last_5min >= 3 THEN 1 
-      ELSE 0 
-    END AS rapid_fire_flag,
-    
-    -- Signal 3: Unusual international transaction
-    CASE 
-      WHEN t.is_international = TRUE AND cb.intl_transaction_ratio < 0.1 THEN 1 
-      ELSE 0 
-    END AS unusual_intl_flag,
-    
-    -- Signal 4: Time-based anomaly (transaction at unusual hour)
-    CASE 
-      WHEN EXTRACT(HOUR FROM t.transaction_timestamp) BETWEEN 2 AND 5 THEN 1 
-      ELSE 0 
-    END AS unusual_hour_flag
-  FROM transaction_time_gaps t
-  JOIN customer_baseline cb ON t.customer_id = cb.customer_id
-  JOIN customers c ON t.customer_id = c.customer_id
-  LEFT JOIN rapid_fire_detection rf 
-    ON t.customer_id = rf.customer_id 
-    AND t.transaction_timestamp = rf.transaction_timestamp
-),
-fraud_risk_scoring AS (
-  SELECT 
-    *,
-    (amount_anomaly_flag + rapid_fire_flag + unusual_intl_flag + unusual_hour_flag) 
-      AS risk_score,
-    CASE 
-      WHEN (amount_anomaly_flag + rapid_fire_flag + unusual_intl_flag + unusual_hour_flag) >= 3 
-        THEN 'High Risk'
-      WHEN (amount_anomaly_flag + rapid_fire_flag + unusual_intl_flag + unusual_hour_flag) = 2 
-        THEN 'Medium Risk'
-      WHEN (amount_anomaly_flag + rapid_fire_flag + unusual_intl_flag + unusual_hour_flag) = 1 
-        THEN 'Low Risk'
-      ELSE 'Normal'
-    END AS fraud_risk_level
-  FROM fraud_signals
-)
-SELECT 
-  transaction_id,
-  customer_id,
-  customer_name,
-  transaction_timestamp,
-  amount,
-  merchant_category,
-  is_international,
-  ROUND(avg_amount, 2) AS customer_avg_amount,
-  risk_score,
-  fraud_risk_level,
-  amount_anomaly_flag,
-  rapid_fire_flag,
-  unusual_intl_flag,
-  unusual_hour_flag
-FROM fraud_risk_scoring
-WHERE fraud_risk_level IN ('High Risk', 'Medium Risk')
-ORDER BY risk_score DESC, amount DESC
-LIMIT 100;
-
-**Explanation:**
-
-"This multi-signal fraud detection system combines statistical analysis with behavioral patterns. I establish each customer's baseline spending over 90 days, then flag anomalies: amounts beyond 3 standard deviations, rapid-fire transactions within 5 minutes, international transactions from domestic-only users, and late-night activity. The risk score aggregates these signals—3+ flags mean high risk. This is similar to how credit card companies detect fraud. In production, Slice would feed these flags into a machine learning model, but this SQL provides immediate actionable alerts for the fraud team."
+### Key Points:
+- Cohort analysis is crucial for understanding user behavior over time
+- Month 0 should always be ~100% (signup month)
+- Declining retention rates are normal; goal is to minimize drop-off"
 
 ---
 
-### Question 6: Customer Lifetime Value (CLV) Segmentation
+## Question 6: Running Total of Credit Limit Utilization
 
-**Interviewer:** We want to segment our customers by their lifetime value. Can you calculate CLV and create meaningful segments?
+**Interviewer:** "For our credit card users, calculate the running credit utilization percentage throughout the month."
 
-**You:** Excellent strategic question! Just to clarify—should I calculate CLV as total historical spend, or use a predictive model based on recent activity?
+**Candidate:** "Interesting! Let me clarify:
+1. Is utilization = (total spent / credit limit)?
+2. Should I consider payments made that reduce the balance?
+3. Do I need daily granularity or transaction-level?"
 
-**Interviewer:** For now, let's use historical CLV—total revenue they've generated for Slice through commissions.
+**Interviewer:** "Yes, utilization = spent/limit. Yes, include payments. Transaction-level granularity."
 
-**You:** Perfect. Should I also include metrics like average transaction value, transaction frequency, and recency for richer segmentation?
+**Candidate:** "Got it.
 
-**Interviewer:** Yes, use RFM (Recency, Frequency, Monetary) framework—that would be ideal.
+### Step-wise Approach:
+1. Get each user's credit limit
+2. Calculate running sum of transactions (positive for purchases, negative for payments)
+3. Compute utilization at each point
 
-**You:** Got it. Should I create specific segment names like "Champions," "At Risk," etc., or just numeric quartiles?
+### Code:
 
-**Interviewer:** Named segments would be more actionable for the business team.
-
-**Solution:**
-
-WITH customer_metrics AS (
-  SELECT 
-    c.customer_id,
-    c.name,
-    c.city,
-    c.credit_score,
-    c.signup_date,
-    
-    -- Monetary: Total commission revenue generated
-    SUM(t.amount * m.commission_rate / 100) AS total_clv,
-    
-    -- Frequency: Transaction count
-    COUNT(DISTINCT t.transaction_id) AS total_transactions,
-    
-    -- Recency: Days since last transaction
-    CURRENT_DATE - MAX(t.transaction_date) AS days_since_last_txn,
-    
-    -- Additional metrics
-    AVG(t.amount) AS avg_transaction_value,
-    COUNT(DISTINCT DATE_TRUNC('month', t.transaction_date)) AS active_months,
-    MAX(t.transaction_date) AS last_transaction_date,
-    MIN(t.transaction_date) AS first_transaction_date
-  FROM customers c
-  LEFT JOIN transactions t ON c.customer_id = t.customer_id AND t.status = 'completed'
-  LEFT JOIN merchants m ON t.merchant_id = m.merchant_id
-  GROUP BY c.customer_id, c.name, c.city, c.credit_score, c.signup_date
+```sql
+WITH credit_events AS (
+    SELECT 
+        user_id,
+        transaction_id,
+        transaction_date,
+        transaction_type,
+        CASE 
+            WHEN transaction_type = 'PURCHASE' THEN amount
+            WHEN transaction_type = 'PAYMENT' THEN -amount
+            ELSE 0
+        END AS balance_change
+    FROM transactions
+    WHERE DATE_TRUNC('month', transaction_date) = DATE_TRUNC('month', CURRENT_DATE)
 ),
-rfm_scoring AS (
-  SELECT 
-    *,
-    -- Recency score (lower days = higher score)
-    NTILE(5) OVER (ORDER BY days_since_last_txn ASC NULLS LAST) AS recency_score,
-    
-    -- Frequency score
-    NTILE(5) OVER (ORDER BY total_transactions DESC) AS frequency_score,
-    
-    -- Monetary score
-    NTILE(5) OVER (ORDER BY total_clv DESC) AS monetary_score
-  FROM customer_metrics
-),
-customer_segments AS (
-  SELECT 
-    *,
-    (recency_score + frequency_score + monetary_score) AS rfm_total_score,
-    CASE 
-      -- Champions: High R, F, M
-      WHEN recency_score >= 4 AND frequency_score >= 4 AND monetary_score >= 4 
-        THEN 'Champions'
-      
-      -- Loyal Customers: High F and M, moderate R
-      WHEN frequency_score >= 4 AND monetary_score >= 4 
-        THEN 'Loyal Customers'
-      
-      -- Potential Loyalists: Recent, moderate F and M
-      WHEN recency_score >= 4 AND frequency_score BETWEEN 2 AND 4 
-        THEN 'Potential Loyalists'
-      
-      -- At Risk: High M and F, but low R (haven't transacted recently)
-      WHEN frequency_score >= 3 AND monetary_score >= 3 AND recency_score <= 2 
-        THEN 'At Risk'
-      
-      -- Can't Lose: Very high M and F, very low R
-      WHEN frequency_score >= 4 AND monetary_score >= 4 AND recency_score = 1 
-        THEN 'Cannot Lose Them'
-      
-      -- New Customers: Recent signup, low F and M
-      WHEN recency_score >= 4 AND frequency_score <= 2 
-        THEN 'New Customers'
-      
-      -- Hibernating: Low R, F, M
-      WHEN recency_score <= 2 AND frequency_score <= 2 AND monetary_score <= 2 
-        THEN 'Hibernating'
-      
-      ELSE 'Need Attention'
-    END AS customer_segment
-  FROM rfm_scoring
+running_balance AS (
+    SELECT 
+        ce.user_id,
+        ce.transaction_id,
+        ce.transaction_date,
+        ce.transaction_type,
+        ce.balance_change,
+        SUM(ce.balance_change) OVER (
+            PARTITION BY ce.user_id 
+            ORDER BY ce.transaction_date, ce.transaction_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS cumulative_balance
+    FROM credit_events ce
 )
 SELECT 
-  customer_segment,
-  COUNT(*) AS customer_count,
-  ROUND(AVG(total_clv), 2) AS avg_clv,
-  ROUND(SUM(total_clv), 2) AS total_segment_clv,
-  ROUND(AVG(total_transactions), 1) AS avg_transactions,
-  ROUND(AVG(days_since_last_txn), 1) AS avg_days_since_last_txn,
-  ROUND(AVG(avg_transaction_value), 2) AS avg_order_value,
-  ROUND(AVG(recency_score), 2) AS avg_recency_score,
-  ROUND(AVG(frequency_score), 2) AS avg_frequency_score,
-  ROUND(AVG(monetary_score), 2) AS avg_monetary_score
-FROM customer_segments
-GROUP BY customer_segment
-ORDER BY total_segment_clv DESC;
+    rb.user_id,
+    rb.transaction_id,
+    rb.transaction_date,
+    rb.transaction_type,
+    rb.balance_change,
+    rb.cumulative_balance,
+    u.credit_limit,
+    ROUND(100.0 * rb.cumulative_balance / NULLIF(u.credit_limit, 0), 2) AS utilization_percentage,
+    CASE 
+        WHEN rb.cumulative_balance / NULLIF(u.credit_limit, 0) > 0.9 THEN 'CRITICAL'
+        WHEN rb.cumulative_balance / NULLIF(u.credit_limit, 0) > 0.7 THEN 'HIGH'
+        WHEN rb.cumulative_balance / NULLIF(u.credit_limit, 0) > 0.3 THEN 'MODERATE'
+        ELSE 'LOW'
+    END AS utilization_tier
+FROM running_balance rb
+JOIN users u ON rb.user_id = u.user_id
+ORDER BY rb.user_id, rb.transaction_date, rb.transaction_id;
+```
 
-**Explanation:**
-
-"This RFM-based segmentation gives Slice actionable customer groups. 'Champions' are your best customers—high engagement and value. 'At Risk' customers were valuable but haven't transacted recently—they need win-back campaigns. 'Cannot Lose Them' are your whales who are going dormant—urgent intervention needed. 'New Customers' need onboarding optimization. Each segment requires different marketing strategies. The beauty of this approach is it's interpretable for non-technical stakeholders and directly drives campaign targeting decisions."
+### Key Points:
+- Used `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` for clarity (default for ORDER BY)
+- NULLIF prevents division by zero
+- Added utilization tiers for business context
+- Transaction_id in ORDER BY handles same-timestamp transactions"
 
 ---
 
-### Question 7: Bill Payment Behavior - Identify On-Time Payers vs Defaulters
+## Question 7: Find Users with Declining Transaction Frequency
 
-**Interviewer:** We need to analyze bill payment behavior to understand credit risk. Can you segment customers by their payment patterns?
+**Interviewer:** "Identify users whose transaction frequency has been declining for 3 consecutive months."
 
-**You:** Critical for Slice's credit business! Should I look at payment timeliness, partial payments, and default patterns?
+**Candidate:** "Good one! Questions:
+1. By frequency, do you mean count of transactions?
+2. Does 'declining' mean strictly less than previous month, or could it include same?
+3. Should I look at the most recent 3 months or any 3 consecutive months?"
 
-**Interviewer:** Yes, exactly. Classify customers into Good Payers, Late Payers, Partial Payers, and Defaulters.
+**Interviewer:** "Yes, count of transactions. Strictly less than. Most recent 3 months."
 
-**You:** Perfect. What defines each category? For example, is "Late Payer" someone who paid after due date but eventually paid in full?
+**Candidate:** "Perfect.
 
-**Interviewer:** Yes. Good Payer = always on time and full amount. Late Payer = paid in full but after due date. Partial Payer = pays something but not full amount. Defaulter = 30+ days overdue with no payment.
+### Step-wise Approach:
+1. Calculate monthly transaction counts per user
+2. Use LAG to get previous months' counts
+3. Check if each month is less than the previous
+4. Filter for 3 consecutive declines
 
-**You:** Got it. Should I calculate this over all historical bills or focus on recent behavior like last 6 months?
+### Code:
 
-**Interviewer:** Last 6 months to reflect current behavior patterns.
-
-**Solution:**
-
-WITH recent_bills AS (
-  SELECT 
-    b.customer_id,
-    b.bill_id,
-    b.bill_date,
-    b.due_date,
-    b.bill_amount,
-    b.payment_status,
-    b.payment_date,
-    b.payment_amount,
-    b.days_overdue,
-    b.late_fee,
-    b.interest_charged,
-    CASE 
-      WHEN b.payment_date <= b.due_date AND b.payment_amount >= b.bill_amount 
-        THEN 'On Time - Full'
-      WHEN b.payment_date > b.due_date AND b.payment_amount >= b.bill_amount 
-        THEN 'Late - Full'
-      WHEN b.payment_amount > 0 AND b.payment_amount < b.bill_amount 
-        THEN 'Partial Payment'
-      WHEN b.days_overdue >= 30 AND COALESCE(b.payment_amount, 0) = 0 
-        THEN 'Defaulted'
-      WHEN b.payment_status = 'Overdue' 
-        THEN 'Overdue - Pending'
-      ELSE 'Other'
-    END AS bill_payment_type
-  FROM bills b
-  WHERE b.bill_date >= CURRENT_DATE - INTERVAL '6 months'
+```sql
+WITH monthly_transactions AS (
+    SELECT 
+        user_id,
+        DATE_TRUNC('month', transaction_date) AS month,
+        COUNT(*) AS transaction_count
+    FROM transactions
+    WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '4 months'
+    GROUP BY user_id, DATE_TRUNC('month', transaction_date)
 ),
-customer_payment_summary AS (
-  SELECT 
-    customer_id,
-    COUNT(*) AS total_bills,
-    
-    -- Payment type breakdown
-    COUNT(CASE WHEN bill_payment_type = 'On Time - Full' THEN 1 END) AS on_time_full_count,
-    COUNT(CASE WHEN bill_payment_type = 'Late - Full' THEN 1 END) AS late_full_count,
-    COUNT(CASE WHEN bill_payment_type = 'Partial Payment' THEN 1 END) AS partial_payment_count,
-    COUNT(CASE WHEN bill_payment_type = 'Defaulted' THEN 1 END) AS defaulted_count,
-    COUNT(CASE WHEN bill_payment_type = 'Overdue - Pending' THEN 1 END) AS overdue_pending_count,
-    
-    -- Financial metrics
-    SUM(bill_amount) AS total_billed,
-    SUM(COALESCE(payment_amount, 0)) AS total_paid,
-    SUM(late_fee) AS total_late_fees,
-    SUM(interest_charged) AS total_interest_charged,
-    AVG(days_overdue) AS avg_days_overdue,
-    MAX(days_overdue) AS max_days_overdue
-  FROM recent_bills
-  GROUP BY customer_id
+with_previous AS (
+    SELECT 
+        user_id,
+        month,
+        transaction_count,
+        LAG(transaction_count, 1) OVER (PARTITION BY user_id ORDER BY month) AS prev_month_1,
+        LAG(transaction_count, 2) OVER (PARTITION BY user_id ORDER BY month) AS prev_month_2,
+        LAG(transaction_count, 3) OVER (PARTITION BY user_id ORDER BY month) AS prev_month_3
+    FROM monthly_transactions
 ),
-customer_classification AS (
-  SELECT 
-    c.customer_id,
-    c.name,
-    c.city,
-    c.credit_score,
-    cps.total_bills,
-    cps.on_time_full_count,
-    cps.late_full_count,
-    cps.partial_payment_count,
-    cps.defaulted_count,
-    cps.overdue_pending_count,
-    ROUND((cps.on_time_full_count::DECIMAL / NULLIF(cps.total_bills, 0)) * 100, 1) 
-      AS on_time_payment_rate,
-    ROUND(cps.total_paid, 2) AS total_paid,
-    ROUND(cps.total_billed, 2) AS total_billed,
-    ROUND((cps.total_paid / NULLIF(cps.total_billed, 0)) * 100, 1) AS payment_completion_rate,
-    ROUND(cps.total_late_fees, 2) AS total_late_fees,
-    ROUND(cps.avg_days_overdue, 1) AS avg_days_overdue,
-    
-    -- Customer segment classification
-    CASE 
-      WHEN cps.on_time_full_count = cps.total_bills 
-        THEN 'Excellent - Always On Time'
-      
-      WHEN cps.on_time_full_count::DECIMAL / cps.total_bills >= 0.8 
-           AND cps.defaulted_count = 0 
-        THEN 'Good Payer'
-      
-      WHEN cps.late_full_count::DECIMAL / cps.total_bills >= 0.5 
-           AND cps.defaulted_count = 0 
-        THEN 'Late Payer - Recoverable'
-      
-      WHEN cps.partial_payment_count >= 2 
-           AND cps.defaulted_count = 0 
-        THEN 'Partial Payer - Risk'
-      
-      WHEN cps.defaulted_count >= 1 
-        THEN 'Defaulter - High Risk'
-      
-      WHEN cps.overdue_pending_count >= 2 
-        THEN 'Multiple Overdue - Watch List'
-      
-      ELSE 'Needs Review'
-    END AS payment_behavior_segment
-  FROM customer_payment_summary cps
-  JOIN customers c ON cps.customer_id = c.customer_id
+declining_users AS (
+    SELECT 
+        user_id,
+        month AS current_month,
+        transaction_count AS current_count,
+        prev_month_1,
+        prev_month_2,
+        prev_month_3
+    FROM with_previous
+    WHERE month = DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month' -- Most recent complete month
+      AND transaction_count < prev_month_1
+      AND prev_month_1 < prev_month_2
+      AND prev_month_2 < prev_month_3
+      -- Ensure all months exist
+      AND prev_month_1 IS NOT NULL
+      AND prev_month_2 IS NOT NULL
+      AND prev_month_3 IS NOT NULL
 )
 SELECT 
-  payment_behavior_segment,
-  COUNT(*) AS customer_count,
-  ROUND(AVG(on_time_payment_rate), 1) AS avg_on_time_rate,
-  ROUND(AVG(payment_completion_rate), 1) AS avg_payment_completion_rate,
-  ROUND(AVG(credit_score), 0) AS avg_credit_score,
-  ROUND(SUM(total_late_fees), 2) AS total_late_fees_collected,
-  ROUND(AVG(avg_days_overdue), 1) AS avg_days_overdue,
-  ROUND(SUM(total_billed - total_paid), 2) AS total_outstanding_amount
-FROM customer_classification
-GROUP BY payment_behavior_segment
-ORDER BY 
-  CASE payment_behavior_segment
-    WHEN 'Excellent - Always On Time' THEN 1
-    WHEN 'Good Payer' THEN 2
-    WHEN 'Late Payer - Recoverable' THEN 3
-    WHEN 'Partial Payer - Risk' THEN 4
-    WHEN 'Multiple Overdue - Watch List' THEN 5
-    WHEN 'Defaulter - High Risk' THEN 6
-    ELSE 7
-  END;
+    d.user_id,
+    u.name,
+    u.email,
+    d.prev_month_3 AS month_3_ago_count,
+    d.prev_month_2 AS month_2_ago_count,
+    d.prev_month_1 AS last_month_count,
+    d.current_count,
+    ROUND(100.0 * (d.prev_month_3 - d.current_count) / d.prev_month_3, 2) AS total_decline_percentage
+FROM declining_users d
+JOIN users u ON d.user_id = u.user_id
+ORDER BY total_decline_percentage DESC;
+```
 
-**Explanation:**
-
-"This payment behavior segmentation is critical for Slice's credit risk management. I classify each bill payment, then aggregate to customer level. 'Excellent' customers get credit limit increases and lower interest rates. 'Defaulters' need collections and credit limit reduction. The interesting insight is comparing credit scores across segments—if 'Defaulters' have high credit scores from other bureaus, it might indicate Slice-specific issues rather than general creditworthiness. The outstanding amount by segment helps prioritize collections efforts."
+### Key Points:
+- Multiple LAG calls efficiently compare multiple periods
+- NULL checks ensure user was active all 4 months
+- Added total decline percentage for prioritization
+- These users are at risk of churning - good targets for re-engagement"
 
 ---
 
-### Question 8: Referral Program Effectiveness Analysis
+## Question 8: Merchant Category Spending Analysis
 
-**Interviewer:** We have a referral program. Can you analyze its effectiveness—which customers bring valuable referrals?
+**Interviewer:** "Write a query to show each user's spending distribution across merchant categories, and identify their primary spending category."
 
-**You:** Great growth lever to analyze! Should I look at both the referrer's quality and the referred customer's quality?
+**Candidate:** "Sure! Clarifications:
+1. Should I show percentage distribution or absolute amounts?
+2. By 'primary', do you mean highest spend?
+3. Any time constraint?"
 
-**Interviewer:** Yes, exactly. We want to know which types of customers refer high-value customers.
+**Interviewer:** "Both percentage and absolute. Yes, highest spend. Last 6 months."
 
-**You:** Perfect. Should I measure the referred customer's quality by their transaction volume in the first 90 days?
+**Candidate:** "Great.
 
-**Interviewer:** Yes, and also their retention rate—do they stick around or churn quickly?
+### Step-wise Approach:
+1. Aggregate spending by user and category
+2. Calculate total spending per user
+3. Compute percentages
+4. Identify primary category using FIRST_VALUE or ranking
 
-**You:** Got it. Should I also analyze if certain acquisition channels produce better referrers?
+### Code:
 
-**Interviewer:** Good thinking—yes, include that dimension.
-
-**Solution:**
-
-WITH referral_pairs AS (
-  SELECT 
-    r.referral_id,
-    r.referrer_customer_id,
-    r.referred_customer_id,
-    r.referral_date,
-    r.referral_status,
-    r.reward_amount,
-    
-    -- Referrer details
-    c1.name AS referrer_name,
-    c1.acquisition_channel AS referrer_acquisition_channel,
-    c1.signup_date AS referrer_signup_date,
-    
-    -- Referred customer details
-    c2.name AS referred_name,
-    c2.signup_date AS referred_signup_date
-  FROM referrals r
-  JOIN customers c1 ON r.referrer_customer_id = c1.customer_id
-  JOIN customers c2 ON r.referred_customer_id = c2.customer_id
-  WHERE r.referral_status = 'Completed'
+```sql
+WITH category_spending AS (
+    SELECT 
+        t.user_id,
+        m.category,
+        SUM(t.amount) AS category_amount,
+        COUNT(*) AS transaction_count
+    FROM transactions t
+    JOIN merchants m ON t.merchant_id = m.merchant_id
+    WHERE t.transaction_date >= CURRENT_DATE - INTERVAL '6 months'
+      AND t.transaction_type = 'PURCHASE'
+    GROUP BY t.user_id, m.category
 ),
-referred_customer_performance AS (
-  SELECT 
-    t.customer_id AS referred_customer_id,
-    COUNT(DISTINCT t.transaction_id) AS txn_count_first_90d,
-    SUM(t.amount) AS total_spend_first_90d,
-    COUNT(DISTINCT DATE_TRUNC('month', t.transaction_date)) AS active_months_first_90d,
-    MAX(t.transaction_date) AS last_transaction_date
-  FROM transactions t
-  JOIN referral_pairs rp ON t.customer_id = rp.referred_customer_id
-  WHERE t.transaction_date BETWEEN rp.referred_signup_date 
-        AND rp.referred_signup_date + INTERVAL '90 days'
-    AND t.status = 'completed'
-  GROUP BY t.customer_id
+user_totals AS (
+    SELECT 
+        user_id,
+        SUM(category_amount) AS total_spending
+    FROM category_spending
+    GROUP BY user_id
 ),
-referrer_performance AS (
-  SELECT 
-    rp.referrer_customer_id,
-    rp.referrer_name,
-    rp.referrer_acquisition_channel,
-    COUNT(DISTINCT rp.referred_customer_id) AS total_referrals,
-    
-    -- Quality of referred customers
-    AVG(COALESCE(rcp.txn_count_first_90d, 0)) AS avg_referred_txn_count,
-    AVG(COALESCE(rcp.total_spend_first_90d, 0)) AS avg_referred_spend,
-    
-    -- Retention of referred customers
-    COUNT(CASE WHEN COALESCE(rcp.active_months_first_90d, 0) >= 2 THEN 1 END)::DECIMAL 
-      / NULLIF(COUNT(DISTINCT rp.referred_customer_id), 0) * 100 AS referred_retention_rate,
-    
-    -- Rewards earned
-    SUM(rp.reward_amount) AS total_rewards_earned,
-    
-    -- Referrer's own performance
-    COUNT(DISTINCT t.transaction_id) AS referrer_own_txn_count,
-    SUM(COALESCE(t.amount, 0)) AS referrer_own_total_spend
-  FROM referral_pairs rp
-  LEFT JOIN referred_customer_performance rcp 
-    ON rp.referred_customer_id = rcp.referred_customer_id
-  LEFT JOIN transactions t 
-    ON rp.referrer_customer_id = t.customer_id 
-    AND t.status = 'completed'
-  GROUP BY rp.referrer_customer_id, rp.referrer_name, rp.referrer_acquisition_channel
-),
-referrer_segments AS (
-  SELECT 
-    *,
-    CASE 
-      WHEN total_referrals >= 5 AND avg_referred_spend > 5000 
-        THEN 'Super Referrer - High Value'
-      WHEN total_referrals >= 5 AND avg_referred_spend BETWEEN 2000 AND 5000 
-        THEN 'Super Referrer - Medium Value'
-      WHEN total_referrals >= 3 AND referred_retention_rate > 60 
-        THEN 'Quality Referrer - High Retention'
-      WHEN total_referrals >= 3 
-        THEN 'Active Referrer'
-      WHEN total_referrals BETWEEN 1 AND 2 
-        THEN 'Occasional Referrer'
-      ELSE 'Single Referrer'
-    END AS referrer_segment
-  FROM referrer_performance
+spending_with_percentage AS (
+    SELECT 
+        cs.user_id,
+        cs.category,
+        cs.category_amount,
+        cs.transaction_count,
+        ut.total_spending,
+        ROUND(100.0 * cs.category_amount / NULLIF(ut.total_spending, 0), 2) AS percentage_of_total,
+        ROW_NUMBER() OVER (
+            PARTITION BY cs.user_id 
+            ORDER BY cs.category_amount DESC
+        ) AS category_rank
+    FROM category_spending cs
+    JOIN user_totals ut ON cs.user_id = ut.user_id
 )
 SELECT 
-  referrer_segment,
-  COUNT(*) AS referrer_count,
-  SUM(total_referrals) AS total_referrals,
-  ROUND(AVG(avg_referred_txn_count), 1) AS avg_txn_per_referred_customer,
-  ROUND(AVG(avg_referred_spend), 2) AS avg_spend_per_referred_customer,
-  ROUND(AVG(referred_retention_rate), 1) AS avg_retention_rate,
-  ROUND(SUM(total_rewards_earned), 2) AS total_rewards_paid,
-  ROUND(AVG(referrer_own_txn_count), 1) AS avg_referrer_own_txn_count,
-  ROUND(AVG(referrer_own_total_spend), 2) AS avg_referrer_own_spend
-FROM referrer_segments
-GROUP BY referrer_segment
-ORDER BY total_referrals DESC;
+    user_id,
+    total_spending,
+    MAX(CASE WHEN category_rank = 1 THEN category END) AS primary_category,
+    MAX(CASE WHEN category_rank = 1 THEN percentage_of_total END) AS primary_category_pct,
+    -- Pivot categories
+    SUM(CASE WHEN category = 'Food & Dining' THEN percentage_of_total ELSE 0 END) AS food_dining_pct,
+    SUM(CASE WHEN category = 'Shopping' THEN percentage_of_total ELSE 0 END) AS shopping_pct,
+    SUM(CASE WHEN category = 'Travel' THEN percentage_of_total ELSE 0 END) AS travel_pct,
+    SUM(CASE WHEN category = 'Entertainment' THEN percentage_of_total ELSE 0 END) AS entertainment_pct,
+    SUM(CASE WHEN category = 'Bills & Utilities' THEN percentage_of_total ELSE 0 END) AS bills_pct,
+    SUM(CASE WHEN category = 'Other' THEN percentage_of_total ELSE 0 END) AS other_pct
+FROM spending_with_percentage
+GROUP BY user_id, total_spending
+ORDER BY total_spending DESC;
+```
 
-**Explanation:**
+### Detail View (one row per user-category):
 
-"This analysis reveals that not all referrals are equal. 'Super Referrers' who bring 5+ customers generating high spend are gold—Slice should give them VIP treatment and higher rewards. The retention rate metric is crucial: if referred customers churn quickly, the referral program isn't building lasting value. I also compare the referrer's own behavior—typically, engaged customers refer engaged customers. Slice can use this to identify potential super referrers early and incentivize them proactively."
+```sql
+SELECT 
+    sp.user_id,
+    u.name,
+    sp.category,
+    sp.category_amount,
+    sp.transaction_count,
+    sp.percentage_of_total,
+    CASE WHEN sp.category_rank = 1 THEN 'PRIMARY' ELSE '' END AS is_primary
+FROM spending_with_percentage sp
+JOIN users u ON sp.user_id = u.user_id
+ORDER BY sp.user_id, sp.category_rank;
+```
+
+### Key Points:
+- ROW_NUMBER() efficiently identifies the primary category
+- Pivot syntax allows horizontal view of categories
+- This data is valuable for personalized offers and recommendations"
 
 ---
 
-### Question 9: Transaction Decline Analysis - Why Are Transactions Failing?
+## Question 9: Calculate 7-Day Rolling Average Transaction Amount
 
-**Interviewer:** We're seeing increased transaction declines. Can you analyze decline patterns to identify the root causes?
+**Interviewer:** "Calculate the 7-day rolling average transaction amount for the platform, along with daily comparison to the rolling average."
 
-**You:** Important operational question! Should I break down declines by decline reason, merchant category, and customer segments?
+**Candidate:** "Got it! Questions:
+1. Should it be a trailing 7-day average (current day + 6 previous)?
+2. Do you want all transactions or average per user first?
+3. Should I handle days with no transactions?"
 
-**Interviewer:** Yes, exactly. We need to understand if it's insufficient limit, technical issues, or fraud blocks.
+**Interviewer:** "Trailing 7-day. All transactions aggregated at platform level. Yes, handle missing days."
 
-**You:** Perfect. Should I also look at time-based patterns—are declines higher during certain hours or days?
+**Candidate:** "Perfect.
 
-**Interviewer:** Good thinking—yes, include temporal patterns and compare decline rates across customer credit score bands.
+### Step-wise Approach:
+1. Generate a date spine for continuous dates
+2. Aggregate daily transaction amounts
+3. Use window function for 7-day rolling average
+4. Compare daily amount to rolling average
 
-**You:** Got it. Should I also analyze if customers successfully transact elsewhere after a decline, or do they stop trying?
+### Code:
 
-**Interviewer:** Excellent point—yes, include retry behavior and customer loss from declines.
-
-**Solution:**
-
-WITH declined_transactions AS (
-  SELECT 
-    t.transaction_id,
-    t.customer_id,
-    t.transaction_date,
-    t.transaction_timestamp,
-    t.amount,
-    t.merchant_category,
-    t.decline_reason,
-    c.credit_score,
-    c.credit_limit,
-    c.current_outstanding,
-    
-    -- Time dimensions
-    EXTRACT(DOW FROM t.transaction_timestamp) AS day_of_week,
-    EXTRACT(HOUR FROM t.transaction_timestamp) AS hour_of_day,
-    
-    -- Available credit at decline time
-    (c.credit_limit - c.current_outstanding) AS available_credit
-  FROM transactions t
-  JOIN customers c ON t.customer_id = c.customer_id
-  WHERE t.status = 'declined'
-    AND t.transaction_date >= CURRENT_DATE - INTERVAL '30 days'
+```sql
+WITH date_spine AS (
+    SELECT generate_series(
+        CURRENT_DATE - INTERVAL '90 days',
+        CURRENT_DATE,
+        '1 day'::interval
+    )::date AS date
 ),
-successful_transactions AS (
-  SELECT 
-    customer_id,
-    COUNT(*) AS successful_txn_count
-  FROM transactions
-  WHERE status = 'completed'
-    AND transaction_date >= CURRENT_DATE - INTERVAL '30 days'
-  GROUP BY customer_id
+daily_stats AS (
+    SELECT 
+        DATE(transaction_date) AS date,
+        SUM(amount) AS daily_amount,
+        COUNT(*) AS transaction_count,
+        COUNT(DISTINCT user_id) AS unique_users,
+        AVG(amount) AS avg_transaction_amount
+    FROM transactions
+    WHERE transaction_date >= CURRENT_DATE - INTERVAL '90 days'
+      AND transaction_type = 'PURCHASE'
+    GROUP BY DATE(transaction_date)
 ),
-customer_retry_behavior AS (
-  SELECT 
-    dt.customer_id,
-    COUNT(DISTINCT dt.transaction_id) AS decline_count,
-    COALESCE(st.successful_txn_count, 0) AS successful_after_decline_count,
-    CASE 
-      WHEN COALESCE(st.successful_txn_count, 0) = 0 THEN 'Lost - No Retry'
-      WHEN COALESCE(st.successful_txn_count, 0) > 0 THEN 'Recovered - Retried'
-      ELSE 'Unknown'
-    END AS customer_outcome
-  FROM declined_transactions dt
-  LEFT JOIN successful_transactions st ON dt.customer_id = st.customer_id
-  GROUP BY dt.customer_id, st.successful_txn_count
+daily_with_gaps AS (
+    SELECT 
+        ds.date,
+        COALESCE(d.daily_amount, 0) AS daily_amount,
+        COALESCE(d.transaction_count, 0) AS transaction_count,
+        COALESCE(d.unique_users, 0) AS unique_users,
+        d.avg_transaction_amount
+    FROM date_spine ds
+    LEFT JOIN daily_stats d ON ds.date = d.date
 ),
-decline_analysis AS (
-  SELECT 
-    dt.decline_reason,
-    dt.merchant_category,
-    CASE 
-      WHEN dt.credit_score >= 750 THEN 'Excellent (750+)'
-      WHEN dt.credit_score BETWEEN 700 AND 749 THEN 'Good (700-749)'
-      WHEN dt.credit_score BETWEEN 650 AND 699 THEN 'Fair (650-699)'
-      ELSE 'Poor (<650)'
-    END AS credit_score_band,
-    CASE 
-      WHEN dt.day_of_week IN (0, 6) THEN 'Weekend'
-      ELSE 'Weekday'
-    END AS day_type,
-    CASE 
-      WHEN dt.hour_of_day BETWEEN 9 AND 17 THEN 'Business Hours'
-      WHEN dt.hour_of_day BETWEEN 18 AND 22 THEN 'Evening'
-      ELSE 'Night/Early Morning'
-    END AS time_period,
-    
-    COUNT(*) AS decline_count,
-    AVG(dt.amount) AS avg_declined_amount,
-    AVG(dt.available_credit) AS avg_available_credit,
-    
-    -- Was decline justified?
-    COUNT(CASE WHEN dt.amount > dt.available_credit THEN 1 END) AS justified_insufficient_limit,
-    COUNT(CASE WHEN dt.amount <= dt.available_credit AND dt.decline_reason = 'insufficient_limit' 
-          THEN 1 END) AS unjustified_insufficient_limit
-  FROM declined_transactions dt
-  GROUP BY 
-    dt.decline_reason,
-    dt.merchant_category,
-    credit_score_band,
-    day_type,
-    time_period
+rolling_metrics AS (
+    SELECT 
+        date,
+        daily_amount,
+        transaction_count,
+        unique_users,
+        avg_transaction_amount,
+        AVG(daily_amount) OVER (
+            ORDER BY date
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        ) AS rolling_7day_avg_amount,
+        SUM(transaction_count) OVER (
+            ORDER BY date
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        ) AS rolling_7day_total_transactions,
+        COUNT(*) OVER (
+            ORDER BY date
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        ) AS days_in_window
+    FROM daily_with_gaps
 )
 SELECT 
-  decline_reason,
-  COUNT(*) AS total_declines,
-  ROUND((COUNT(*)::DECIMAL / SUM(COUNT(*)) OVER ()) * 100, 2) AS pct_of_total_declines,
-  STRING_AGG(DISTINCT merchant_category, ', ') AS top_affected_categories,
-  ROUND(AVG(avg_declined_amount), 2) AS avg_amount,
-  SUM(justified_insufficient_limit) AS justified_count,
-  SUM(unjustified_insufficient_limit) AS unjustified_count
-FROM decline_analysis
-GROUP BY decline_reason
-ORDER BY total_declines DESC;
+    date,
+    daily_amount,
+    transaction_count,
+    unique_users,
+    ROUND(rolling_7day_avg_amount, 2) AS rolling_7day_avg,
+    rolling_7day_total_transactions,
+    ROUND(daily_amount - rolling_7day_avg_amount, 2) AS variance_from_avg,
+    CASE 
+        WHEN rolling_7day_avg_amount = 0 THEN NULL
+        ELSE ROUND(100.0 * (daily_amount - rolling_7day_avg_amount) / rolling_7day_avg_amount, 2)
+    END AS pct_variance,
+    CASE 
+        WHEN daily_amount > rolling_7day_avg_amount * 1.2 THEN 'ABOVE_TREND'
+        WHEN daily_amount < rolling_7day_avg_amount * 0.8 THEN 'BELOW_TREND'
+        ELSE 'NORMAL'
+    END AS trend_status
+FROM rolling_metrics
+WHERE days_in_window = 7  -- Ensure full 7-day window
+ORDER BY date DESC;
+```
 
-**Explanation:**
-
-"This decline analysis helps Slice pinpoint operational issues. If 'insufficient_limit' is the top reason but many are unjustified (amount < available credit), there's a system bug. If 'suspected_fraud' spikes for excellent credit score customers, the fraud model is over-blocking. The time-based patterns might reveal infrastructure issues—if declines spike during business hours, payment gateway capacity might be insufficient. The retry behavior metric is critical: customers who stop trying after declines represent lost revenue. This analysis directly informs product and engineering priorities."
+### Key Points:
+- Date spine ensures no gaps in time series
+- `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` = 7-day window
+- Filter `days_in_window = 7` avoids partial calculations at start
+- Variance calculations help identify anomalies"
 
 ---
 
-### Question 10: Credit Limit Optimization - Who Deserves Limit Increases?
+## Question 10: Find Users Eligible for Credit Limit Increase
 
-**Interviewer:** We want to proactively increase credit limits for deserving customers. Can you identify customers who should get limit increases?
+**Interviewer:** "Write a query to identify users eligible for a credit limit increase based on: good payment history, account age, and spending patterns."
 
-**You:** Excellent growth opportunity! Should I look at payment history, spending patterns, and credit utilization to identify candidates?
+**Candidate:** "Great business-relevant question! Let me clarify the criteria:
+1. What defines 'good payment history'? No missed payments?
+2. Minimum account age requirement?
+3. What spending pattern - consistent usage or high utilization?
+4. Are there any other disqualifying factors?"
 
-**Interviewer:** Yes, exactly. We want customers who are creditworthy and would actually use the additional limit.
+**Interviewer:** "Good payment history = no late payments in last 6 months. Account age >= 6 months. Spending pattern = average utilization between 30-80%. Also exclude users who received an increase in last 6 months."
 
-**You:** Perfect. What criteria define "creditworthy"? For example, no late payments in last 6 months and credit utilization above 70%?
+**Candidate:** "Perfect, clear criteria.
 
-**Interviewer:** Yes, clean payment history is essential. Also check if they're bumping against their current limit frequently—that indicates demand for higher limits.
+### Step-wise Approach:
+1. Calculate payment history score
+2. Check account age
+3. Calculate average utilization
+4. Check for recent limit increases
+5. Combine all criteria
 
-**You:** Got it. Should I suggest specific increase amounts, or just flag candidates?
+### Code:
 
-**Interviewer:** Suggest specific amounts based on their usage patterns and risk profile.
-
-**Solution:**
-
-WITH customer_credit_behavior AS (
-  SELECT 
-    c.customer_id,
-    c.name,
-    c.credit_score,
-    c.credit_limit,
-    c.current_outstanding,
-    c.signup_date,
-    
-    -- Credit utilization
-    ROUND((c.current_outstanding / NULLIF(c.credit_limit, 0)) * 100, 2) 
-      AS current_utilization_pct,
-    
-    -- Transaction metrics (last 90 days)
-    COUNT(DISTINCT CASE WHEN t.transaction_date >= CURRENT_DATE - INTERVAL '90 days' 
-          THEN t.transaction_id END) AS txn_count_90d,
-    SUM(CASE WHEN t.transaction_date >= CURRENT_DATE - INTERVAL '90 days' 
-        THEN t.amount ELSE 0 END) AS total_spend_90d,
-    AVG(CASE WHEN t.transaction_date >= CURRENT_DATE - INTERVAL '90 days' 
-        THEN t.amount END) AS avg_txn_amount_90d,
-    
-    -- How often do they max out?
-    COUNT(CASE WHEN t.transaction_date >= CURRENT_DATE - INTERVAL '90 days' 
-               AND t.status = 'declined' 
-               AND t.decline_reason = 'insufficient_limit' 
-          THEN 1 END) AS limit_decline_count_90d
-  FROM customers c
-  LEFT JOIN transactions t ON c.customer_id = t.customer_id
-  GROUP BY c.customer_id, c.name, c.credit_score, c.credit_limit, 
-           c.current_outstanding, c.signup_date
+```sql
+WITH payment_history AS (
+    SELECT 
+        user_id,
+        COUNT(*) AS total_payments,
+        SUM(CASE WHEN payment_status = 'LATE' THEN 1 ELSE 0 END) AS late_payments,
+        SUM(CASE WHEN payment_status = 'MISSED' THEN 1 ELSE 0 END) AS missed_payments
+    FROM payment_records
+    WHERE payment_date >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY user_id
 ),
-payment_history_check AS (
-  SELECT 
-    b.customer_id,
-    COUNT(*) AS total_bills_6m,
-    COUNT(CASE WHEN b.payment_date <= b.due_date THEN 1 END) AS on_time_payments,
-    COUNT(CASE WHEN b.days_overdue >= 30 THEN 1 END) AS severe_late_payments,
-    SUM(b.late_fee) AS total_late_fees_6m
-  FROM bills b
-  WHERE b.bill_date >= CURRENT_DATE - INTERVAL '6 months'
-  GROUP BY b.customer_id
+account_age AS (
+    SELECT 
+        user_id,
+        signup_date,
+        CURRENT_DATE - signup_date AS days_since_signup,
+        (CURRENT_DATE - signup_date) / 30 AS months_since_signup
+    FROM users
 ),
-credit_limit_candidates AS (
-  SELECT 
-    ccb.*,
-    COALESCE(phc.on_time_payments, 0) AS on_time_payments,
-    COALESCE(phc.total_bills_6m, 0) AS total_bills_6m,
-    COALESCE(phc.severe_late_payments, 0) AS severe_late_payments,
-    COALESCE(phc.total_late_fees_6m, 0) AS total_late_fees_6m,
-    
-    -- Clean payment rate
-    ROUND(
-      (COALESCE(phc.on_time_payments, 0)::DECIMAL / NULLIF(phc.total_bills_6m, 0)) * 100, 
-      1
-    ) AS on_time_payment_rate,
-    
-    -- Risk score (custom)
-    CASE 
-      WHEN ccb.credit_score >= 750 
-           AND COALESCE(phc.severe_late_payments, 0) = 0 
-           AND ccb.current_utilization_pct < 90 
-        THEN 'Low Risk'
-      
-      WHEN ccb.credit_score BETWEEN 700 AND 749 
-           AND COALESCE(phc.severe_late_payments, 0) = 0 
-        THEN 'Medium Risk'
-      
-      ELSE 'High Risk'
-    END AS risk_category,
-    
-    -- Suggested limit increase
-    CASE 
-      WHEN ccb.credit_score >= 750 
-           AND ccb.current_utilization_pct >= 70 
-           AND COALESCE(phc.on_time_payments, 0) = COALESCE(phc.total_bills_6m, 0)
-           AND ccb.limit_decline_count_90d >= 2
-        THEN ROUND(ccb.credit_limit * 1.5, -3)  -- 50% increase
-      
-      WHEN ccb.credit_score >= 720 
-           AND ccb.current_utilization_pct >= 60 
-           AND COALESCE(phc.on_time_payment_rate, 0) >= 90
-        THEN ROUND(ccb.credit_limit * 1.3, -3)  -- 30% increase
-      
-      WHEN ccb.credit_score >= 700 
-           AND ccb.current_utilization_pct >= 50 
-           AND COALESCE(phc.on_time_payment_rate, 0) >= 80
-        THEN ROUND(ccb.credit_limit * 1.2, -3)  -- 20% increase
-      
-      ELSE ccb.credit_limit  -- No increase
-    END AS suggested_new_limit
-  FROM customer_credit_behavior ccb
-  LEFT JOIN payment_history_check phc ON ccb.customer_id = phc.customer_id
+monthly_utilization AS (
+    SELECT 
+        t.user_id,
+        DATE_TRUNC('month', t.transaction_date) AS month,
+        SUM(CASE WHEN t.transaction_type = 'PURCHASE' THEN t.amount ELSE 0 END) AS monthly_spend
+    FROM transactions t
+    WHERE t.transaction_date >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY t.user_id, DATE_TRUNC('month', t.transaction_date)
+),
+avg_utilization AS (
+    SELECT 
+        mu.user_id,
+        AVG(mu.monthly_spend) AS avg_monthly_spend,
+        u.credit_limit,
+        AVG(mu.monthly_spend) / NULLIF(u.credit_limit, 0) AS avg_utilization_ratio
+    FROM monthly_utilization mu
+    JOIN users u ON mu.user_id = u.user_id
+    GROUP BY mu.user_id, u.credit_limit
+),
+recent_increases AS (
+    SELECT DISTINCT user_id
+    FROM credit_limit_changes
+    WHERE change_date >= CURRENT_DATE - INTERVAL '6 months'
+      AND change_type = 'INCREASE'
+),
+eligibility_check AS (
+    SELECT 
+        u.user_id,
+        u.name,
+        u.email,
+        u.credit_limit AS current_limit,
+        aa.months_since_signup,
+        COALESCE(ph.late_payments, 0) AS late_payments,
+        COALESCE(ph.missed_payments, 0) AS missed_payments,
+        ROUND(COALESCE(au.avg_utilization_ratio, 0) * 100, 2) AS avg_utilization_pct,
+        CASE WHEN ri.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS had_recent_increase,
+        -- Eligibility flags
+        CASE WHEN aa.months_since_signup >= 6 THEN TRUE ELSE FALSE END AS meets_age_requirement,
+        CASE WHEN COALESCE(ph.late_payments, 0) = 0 
+              AND COALESCE(ph.missed_payments, 0) = 0 THEN TRUE ELSE FALSE END AS good_payment_history,
+        CASE WHEN COALESCE(au.avg_utilization_ratio, 0) BETWEEN 0.3 AND 0.8 
+             THEN TRUE ELSE FALSE END AS healthy_utilization
+    FROM users u
+    LEFT JOIN account_age aa ON u.user_id = aa.user_id
+    LEFT JOIN payment_history ph ON u.user_id = ph.user_id
+    LEFT JOIN avg_utilization au ON u.user_id = au.user_id
+    LEFT JOIN recent_increases ri ON u.user_id = ri.user_id
+    WHERE u.account_status = 'ACTIVE'
 )
 SELECT 
-  customer_id,
-  name,
-  credit_score,
-  credit_limit AS current_limit,
-  suggested_new_limit,
-  (suggested_new_limit - credit_limit) AS limit_increase_amount,
-  ROUND(((suggested_new_limit - credit_limit)::DECIMAL / credit_limit) * 100, 1) 
-    AS increase_percentage,
-  current_utilization_pct,
-  txn_count_90d,
-  ROUND(total_spend_90d, 2) AS total_spend_90d,
-  limit_decline_count_90d,
-  on_time_payment_rate,
-  severe_late_payments,
-  risk_category
-FROM credit_limit_candidates
-WHERE suggested_new_limit > credit_limit  -- Only show increase candidates
-  AND risk_category IN ('Low Risk', 'Medium Risk')  -- Exclude high risk
-ORDER BY limit_increase_amount DESC
-LIMIT 100;
+    user_id,
+    name,
+    email,
+    current_limit,
+    months_since_signup,
+    late_payments,
+    missed_payments,
+    avg_utilization_pct,
+    -- Recommended increase (example: 20% for good users, 30% for excellent)
+    CASE 
+        WHEN avg_utilization_pct >= 60 THEN ROUND(current_limit * 0.30, -2) -- 30% increase, rounded to nearest 100
+        ELSE ROUND(current_limit * 0.20, -2) -- 20% increase
+    END AS recommended_increase,
+    current_limit + CASE 
+        WHEN avg_utilization_pct >= 60 THEN ROUND(current_limit * 0.30, -2)
+        ELSE ROUND(current_limit * 0.20, -2)
+    END AS proposed_new_limit
+FROM eligibility_check
+WHERE meets_age_requirement = TRUE
+  AND good_payment_history = TRUE
+  AND healthy_utilization = TRUE
+  AND had_recent_increase = FALSE
+ORDER BY avg_utilization_pct DESC, months_since_signup DESC;
+```
 
-**Explanation:**
+### Summary Statistics:
 
-"This query identifies customers who deserve credit limit increases based on proven creditworthiness and demonstrated need. The scoring considers multiple dimensions: credit score (external validation), payment history (Slice-specific behavior), utilization (need for higher limit), and decline frequency (blocked demand). The suggested increases are tiered: 50% for excellent customers with perfect payment history and high utilization, down to 20% for good customers. This proactive approach increases revenue (more spending capacity) while maintaining credit quality. Slice can automate these increases or use them for manual review."
+```sql
+SELECT 
+    COUNT(*) AS total_eligible_users,
+    SUM(current_limit) AS total_current_exposure,
+    SUM(recommended_increase) AS total_proposed_increase,
+    AVG(avg_utilization_pct) AS avg_utilization_of_eligible,
+    AVG(months_since_signup) AS avg_account_age_months
+FROM (
+    -- Previous query as subquery
+) eligible_users;
+```
+
+### Key Points:
+- Multiple CTEs organize complex business logic clearly
+- LEFT JOINs ensure we don't exclude users missing from some tables
+- COALESCE handles NULLs appropriately
+- Recommended increase logic can be adjusted based on business rules
+- This query would be valuable for credit risk team and could be scheduled monthly"
+
+---
+
+## Bonus Tips for SQL Interviews
+
+### General Framework for Answering SQL Questions:
+
+1. **Clarify Requirements** (30 seconds)
+   - Define key terms
+   - Understand edge cases
+   - Confirm output format
+
+2. **State Your Approach** (1 minute)
+   - Break down the problem
+   - Mention which SQL features you'll use
+   - Discuss trade-offs if any
+
+3. **Write the Query** (3-5 minutes)
+   - Start with CTEs for complex queries
+   - Write incrementally, testing logic
+   - Add comments for complex sections
+
+4. **Validate & Optimize** (1 minute)
+   - Check for edge cases
+   - Discuss potential indexes
+   - Mention performance considerations
+
+### Key SQL Concepts for Fintech:
+- Window functions (LAG, LEAD, ROW_NUMBER, DENSE_RANK, running totals)
+- Date/time manipulation
+- CTEs for readability
+- Handling NULLs and edge cases
+- Cohort analysis
+- Rolling calculations
+- Fraud detection patterns
+- Financial calculations (interest, utilization, etc.)
+
+### Common Pitfalls to Avoid:
+- Division by zero
+- Not handling NULL values
+- Incorrect date boundaries
+- Not considering ties in ranking
+- Forgetting to deduplicate when needed
+- Using GROUP BY with wrong columns
